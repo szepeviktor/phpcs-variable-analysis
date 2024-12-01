@@ -4,6 +4,7 @@ namespace VariableAnalysis\Lib;
 
 use PHP_CodeSniffer\Files\File;
 use VariableAnalysis\Lib\ScopeInfo;
+use VariableAnalysis\Lib\Constants;
 use VariableAnalysis\Lib\ForLoopInfo;
 use VariableAnalysis\Lib\EnumInfo;
 use VariableAnalysis\Lib\ScopeType;
@@ -443,6 +444,68 @@ class Helpers
 		}
 
 		return self::findVariableScopeExceptArrowFunctions($phpcsFile, $stackPtr);
+	}
+
+	/**
+	 * Return the variable names and positions of each variable targetted by a `compact()` call.
+	 *
+	 * @param File                   $phpcsFile
+	 * @param int                    $stackPtr
+	 * @param array<int, array<int>> $arguments The stack pointers of each argument; see findFunctionCallArguments
+	 *
+	 * @return array<VariableInfo> each variable's firstRead position and its name; other VariableInfo properties are not set!
+	 */
+	public static function getVariablesInsideCompact(File $phpcsFile, $stackPtr, $arguments)
+	{
+		$tokens = $phpcsFile->getTokens();
+		$variablePositionsAndNames = [];
+
+		foreach ($arguments as $argumentPtrs) {
+			$argumentPtrs = array_values(array_filter($argumentPtrs, function ($argumentPtr) use ($tokens) {
+				return isset(Tokens::$emptyTokens[$tokens[$argumentPtr]['code']]) === false;
+			}));
+			if (empty($argumentPtrs)) {
+				continue;
+			}
+			if (!isset($tokens[$argumentPtrs[0]])) {
+				continue;
+			}
+			$argumentFirstToken = $tokens[$argumentPtrs[0]];
+			if ($argumentFirstToken['code'] === T_ARRAY) {
+				// It's an array argument, recurse.
+				$arrayArguments = self::findFunctionCallArguments($phpcsFile, $argumentPtrs[0]);
+				$variablePositionsAndNames = array_merge($variablePositionsAndNames, self::getVariablesInsideCompact($phpcsFile, $stackPtr, $arrayArguments));
+				continue;
+			}
+			if (count($argumentPtrs) > 1) {
+				// Complex argument, we can't handle it, ignore.
+				continue;
+			}
+			if ($argumentFirstToken['code'] === T_CONSTANT_ENCAPSED_STRING) {
+				// Single-quoted string literal, ie compact('whatever').
+				// Substr is to strip the enclosing single-quotes.
+				$varName = substr($argumentFirstToken['content'], 1, -1);
+				$variable = new VariableInfo($varName);
+				$variable->firstRead = $argumentPtrs[0];
+				$variablePositionsAndNames[] = $variable;
+				continue;
+			}
+			if ($argumentFirstToken['code'] === T_DOUBLE_QUOTED_STRING) {
+				// Double-quoted string literal.
+				$regexp = Constants::getDoubleQuotedVarRegexp();
+				if (! empty($regexp) && preg_match($regexp, $argumentFirstToken['content'])) {
+					// Bail if the string needs variable expansion, that's runtime stuff.
+					continue;
+				}
+				// Substr is to strip the enclosing double-quotes.
+				$varName = substr($argumentFirstToken['content'], 1, -1);
+				$variable = new VariableInfo($varName);
+				$variable->firstRead = $argumentPtrs[0];
+				$variablePositionsAndNames[] = $variable;
+				continue;
+			}
+		}
+		return $variablePositionsAndNames;
 	}
 
 	/**
