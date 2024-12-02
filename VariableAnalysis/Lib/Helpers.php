@@ -428,17 +428,20 @@ class Helpers
 		$token = $tokens[$stackPtr];
 		$varName = isset($varName) ? $varName : self::normalizeVarName($token['content']);
 
-		$arrowFunctionIndex = self::getContainingArrowFunctionIndex($phpcsFile, $stackPtr);
-		$isTokenInsideArrowFunctionBody = is_int($arrowFunctionIndex);
-		if ($isTokenInsideArrowFunctionBody) {
-			// Get the list of variables defined by the arrow function
-			// If this matches any of them, the scope is the arrow function,
-			// otherwise, it uses the enclosing scope.
-			if ($arrowFunctionIndex) {
-				$variableNames = self::getVariablesDefinedByArrowFunction($phpcsFile, $arrowFunctionIndex);
-				self::debug('findVariableScope: looking for', $varName, 'in arrow function variables', $variableNames);
-				if (in_array($varName, $variableNames, true)) {
-					return $arrowFunctionIndex;
+		$enclosingScopeIndex = self::findVariableScopeExceptArrowFunctions($phpcsFile, $stackPtr);
+		if ($enclosingScopeIndex) {
+			$arrowFunctionIndex = self::getContainingArrowFunctionIndex($phpcsFile, $stackPtr, $enclosingScopeIndex);
+			$isTokenInsideArrowFunctionBody = is_int($arrowFunctionIndex);
+			if ($isTokenInsideArrowFunctionBody) {
+				// Get the list of variables defined by the arrow function
+				// If this matches any of them, the scope is the arrow function,
+				// otherwise, it uses the enclosing scope.
+				if ($arrowFunctionIndex) {
+					$variableNames = self::getVariablesDefinedByArrowFunction($phpcsFile, $arrowFunctionIndex);
+					self::debug('findVariableScope: looking for', $varName, 'in arrow function variables', $variableNames);
+					if (in_array($varName, $variableNames, true)) {
+						return $arrowFunctionIndex;
+					}
 				}
 			}
 		}
@@ -635,12 +638,13 @@ class Helpers
 	/**
 	 * @param File $phpcsFile
 	 * @param int  $stackPtr
+	 * @param int  $enclosingScopeIndex
 	 *
 	 * @return ?int
 	 */
-	public static function getContainingArrowFunctionIndex(File $phpcsFile, $stackPtr)
+	public static function getContainingArrowFunctionIndex(File $phpcsFile, $stackPtr, $enclosingScopeIndex)
 	{
-		$arrowFunctionIndex = self::getPreviousArrowFunctionIndex($phpcsFile, $stackPtr);
+		$arrowFunctionIndex = self::getPreviousArrowFunctionIndex($phpcsFile, $stackPtr, $enclosingScopeIndex);
 		if (! is_int($arrowFunctionIndex)) {
 			return null;
 		}
@@ -648,39 +652,45 @@ class Helpers
 		if (! $arrowFunctionInfo) {
 			return null;
 		}
-		$arrowFunctionScopeStart = $arrowFunctionInfo['scope_opener'];
-		$arrowFunctionScopeEnd = $arrowFunctionInfo['scope_closer'];
-		if ($stackPtr > $arrowFunctionScopeStart && $stackPtr < $arrowFunctionScopeEnd) {
+
+		// We found the closest arrow function before this token. If the token is
+		// within the scope of that arrow function, then return it.
+		if ($stackPtr > $arrowFunctionInfo['scope_opener'] && $stackPtr < $arrowFunctionInfo['scope_closer']) {
 			return $arrowFunctionIndex;
 		}
+
+		// If the token is after the scope of the closest arrow function, we may
+		// still be inside the scope of a nested arrow function, so we need to
+		// search further back until we are certain there are no more arrow
+		// functions.
+		if ($stackPtr > $arrowFunctionInfo['scope_closer']) {
+			return self::getContainingArrowFunctionIndex($phpcsFile, $arrowFunctionIndex, $enclosingScopeIndex);
+		}
+
 		return null;
 	}
 
 	/**
+	 * Move back from the stackPtr to the start of the enclosing scope until we
+	 * find a 'fn' token that starts an arrow function, returning the index of
+	 * that token. Returns null if there are no arrow functions before stackPtr.
+	 *
+	 * Note that this does not guarantee that stackPtr is inside the arrow
+	 * function scope we find!
+	 *
 	 * @param File $phpcsFile
 	 * @param int  $stackPtr
+	 * @param int  $enclosingScopeIndex
 	 *
 	 * @return ?int
 	 */
-	private static function getPreviousArrowFunctionIndex(File $phpcsFile, $stackPtr)
+	private static function getPreviousArrowFunctionIndex(File $phpcsFile, $stackPtr, $enclosingScopeIndex)
 	{
 		$tokens = $phpcsFile->getTokens();
-		$enclosingScopeIndex = self::findVariableScopeExceptArrowFunctions($phpcsFile, $stackPtr);
 		for ($index = $stackPtr - 1; $index > $enclosingScopeIndex; $index--) {
 			$token = $tokens[$index];
 			if ($token['content'] === 'fn' && self::isArrowFunction($phpcsFile, $index)) {
 				return $index;
-			}
-			// If we find a token that would close an arrow function scope before we
-			// find a token that would open an arrow function scope, then we've found
-			// a nested arrow function and we should ignore it, move back before THAT
-			// arrow function's scope, and continue to search.
-			$arrowFunctionStartIndex = $phpcsFile->findPrevious([T_FN], $index, $enclosingScopeIndex);
-			if (is_int($arrowFunctionStartIndex)) {
-				$openClose = self::getArrowFunctionOpenClose($phpcsFile, $arrowFunctionStartIndex);
-				if ($openClose && $openClose['scope_closer'] === $index) {
-					$index = $openClose['scope_opener'];
-				}
 			}
 		}
 		return null;
