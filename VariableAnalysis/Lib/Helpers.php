@@ -640,6 +640,9 @@ class Helpers
 	 */
 	public static function getContainingArrowFunctionIndex(File $phpcsFile, $stackPtr)
 	{
+		if (! self::isTokenInsideArrowFunction($phpcsFile, $stackPtr)) {
+			return null;
+		}
 		$arrowFunctionIndex = self::getPreviousArrowFunctionIndex($phpcsFile, $stackPtr);
 		if (! is_int($arrowFunctionIndex)) {
 			return null;
@@ -657,6 +660,38 @@ class Helpers
 	}
 
 	/**
+	 * Move back from the stackPtr to the start of the enclosing scope until we
+	 * find a 'fn' token that starts an arrow function, returning true if we find
+	 * one.
+	 *
+	 * @param File $phpcsFile
+	 * @param int  $stackPtr
+	 *
+	 * @return bool
+	 */
+	private static function isTokenInsideArrowFunction(File $phpcsFile, $stackPtr)
+	{
+		$tokens = $phpcsFile->getTokens();
+		$enclosingScopeIndex = self::findVariableScopeExceptArrowFunctions($phpcsFile, $stackPtr);
+		for ($index = $stackPtr - 1; $index > $enclosingScopeIndex; $index--) {
+			$token = $tokens[$index];
+			if ($token['content'] === 'fn' && self::isArrowFunction($phpcsFile, $index)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Move back from the stackPtr to the start of the enclosing scope until we
+	 * find a 'fn' token that starts an arrow function, returning the index of
+	 * that token. Returns null if we are not inside an arrow function.
+	 *
+	 * NOTE: This is used to find arrow function scope but is not fast because it
+	 * needs to identify nested arrow functions also. Please use
+	 * `isTokenInsideArrowFunction()` instead if you just want to know if we are
+	 * inside an arrow function.
+	 *
 	 * @param File $phpcsFile
 	 * @param int  $stackPtr
 	 *
